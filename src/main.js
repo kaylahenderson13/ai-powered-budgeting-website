@@ -7,44 +7,72 @@ const ready=Boolean(url&&key&&!url.includes('YOUR_PROJECT'));
 const sb=ready?createClient(url,key):null;
 const app=document.querySelector('#app');
 const money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0);
-function categorizeExpense(description) {
-  const text = String(description || '').toLowerCase();
-
-  const categories = {
-    Food: ['walmart', 'stop & shop', 'grocery', 'restaurant', 'mcdonald', 'starbucks', 'dunkin', 'aldi'],
-    Transportation: ['shell', 'exxon', 'mobil', 'gas station', 'uber', 'lyft', 'parking'],
-    Utilities: ['eversource', 'electric', 'water bill', 'internet', 'frontier', 'verizon'],
-    Housing: ['rent', 'mortgage', 'property tax'],
-    Entertainment: ['netflix', 'disney', 'spotify', 'hulu', 'movie', 'concert'],
-    Healthcare: ['pharmacy', 'cvs', 'walgreens', 'doctor', 'hospital', 'prescription'],
-    Debt: ['credit card payment', 'loan payment']
-  };
-
-  for (const [category, keywords] of Object.entries(categories)) {
-    if (keywords.some(keyword => text.includes(keyword))) {
-      return category;
-    }
-  }
-
-  return 'Other';
-}
 const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let session=null,entries=[],chart=null;
+
+// Keyword-based categorization runs locally, using existing database categories.
+const categoryRules = [
+ ['Housing', /\b(rent|mortgage|landlord|property tax|home insurance)\b/],
+ ['Food', /\b(grocery|groceries|supermarket|restaurant|cafe|coffee|lunch|dinner|breakfast|takeout|pizza|food|starbucks)\b/],
+ ['Transportation', /\b(gas|gasoline|fuel|uber|lyft|taxi|bus|train|subway|parking|toll|car insurance|car repair)\b/],
+ ['Utilities', /\b(electricity|electric|water bill|sewer|internet|wifi|phone bill|natural gas|utility|utilities)\b/],
+ ['Entertainment', /\b(netflix|spotify|hulu|disney|movie|cinema|concert|gaming|video game|entertainment)\b/],
+ ['Healthcare', /\b(doctor|dentist|hospital|pharmacy|medicine|prescription|medical|healthcare|copay|health insurance)\b/],
+ ['Debt', /\b(loan payment|credit card payment|student loan|debt payment)\b/],
+ ['Savings', /\b(savings|emergency fund|retirement contribution)\b/]
+];
+function categorizeEntry(description, kind) {
+ if(kind==='income')return 'Paycheck';
+ if(kind==='debt')return 'Debt';
+ const text=String(description||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+ const matches=categoryRules.filter(([category,pattern])=>pattern.test(category==='Transportation'?text.replace(/\bnatural gas\b/g,''):text)).map(([category])=>category);
+ return matches.length===1?matches[0]:'Other';
+}
+function setupCategorization(form){
+ const description=form.elements.description,kind=form.elements.kind,category=form.elements.category,automatic=form.elements.auto_category;
+ const preview=document.querySelector('#categorypreview');
+ const update=()=>{
+  if(automatic.checked)category.value=categorizeEntry(description.value,kind.value);
+  preview.textContent=automatic.checked?`Automatic category: ${category.value}. Review before saving; choose a category to override.`:`Selected category: ${category.value}. Automatic categorization is off.`;
+ };
+ description.addEventListener('input',update);
+ kind.addEventListener('change',update);
+ automatic.addEventListener('change',update);
+ category.addEventListener('change',()=>{automatic.checked=false;update();});
+ update();return update;
+}
+
 function header(){return `<header><a class="brand" href="#">✦ Financial Auditor <small>AI</small></a><span>CAPSTONE PROTOTYPE</span>${session?'<button id="logout" class="ghost">Sign out</button>':''}</header>`}
 function shell(content){app.innerHTML=header()+`<main>${content}</main><footer>Educational prototype · Enter fictional data only · No bank connections · AI suggestions may be inaccurate</footer>`;document.querySelector('#logout')?.addEventListener('click',()=>sb.auth.signOut());}
 function notice(id,msg){document.querySelector('#'+id).textContent=msg;}
 function authScreen(){shell(`<div class="auth layout"><div><span class="eyebrow">PERSONAL FINANCE, SIMPLIFIED</span><h1>Make sense of your money.</h1><p>Track income and expenses, visualize your monthly budget, and ask AI questions about your financial goals.</p><div class="feature">✓ Your own private account</div><div class="feature">✓ Financial dashboard</div><div class="feature">✓ Personalized recommendations</div></div><section class="panel"><h2>Welcome</h2><p>Sign in or create a test account.</p><form id="authform"><label>Email<input name="email" type="email" required autocomplete="email" /></label><label>Password<input name="password" type="password" required minlength="6" autocomplete="current-password" /></label><div class="actions"><button type="submit" name="mode" value="signin">Sign in</button><button class="outline" type="submit" name="mode" value="signup">Create account</button></div><p id="authstatus" class="status" role="status"></p></form></section></div>`);
 const form=document.querySelector('#authform');form.addEventListener('submit',async ev=>{ev.preventDefault();if(!ready){notice('authstatus','Connect your Supabase project first; see README.');return;}const f=new FormData(form),creds={email:String(f.get('email')),password:String(f.get('password'))};const mode=ev.submitter?.value||'signin';notice('authstatus','Connecting…');const {data,error}=mode==='signup'?await sb.auth.signUp(creds):await sb.auth.signInWithPassword(creds);notice('authstatus',error?error.message:mode==='signup'&&!data.session?'Account created. Confirm your email, then sign in.':'Signed in.');});}
-function currentMonth(){return new Date().toISOString().slice(0,7)}
+function localDate(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function currentMonth(){return localDate().slice(0,7)}
 async function loadEntries(){const {data,error}=await sb.from('entries').select('*').order('entry_date',{ascending:false});if(error)throw error;entries=data||[];}
 function totals(rows){let income=0,expense=0,debt=0;for(const r of rows){if(r.kind==='income')income+=Number(r.amount);else if(r.kind==='expense')expense+=Number(r.amount);else debt+=Number(r.amount);}return {income,expense,debt,left:income-expense-debt};}
 function render(){const ym=currentMonth(),monthly=entries.filter(e=>e.entry_date.startsWith(ym)),t=totals(monthly),spend=t.expense+t.debt,rate=t.income?Math.max(0,(t.income-spend)/t.income*100):0;
 const categories={};for(const r of monthly.filter(x=>x.kind!=='income'))categories[r.category]=(categories[r.category]||0)+Number(r.amount);
 const high=Object.entries(categories).sort((a,b)=>b[1]-a[1])[0];
 const tips=[];if(!t.income)tips.push('Add your monthly income to unlock a budget comparison.');if(t.left<0)tips.push(`Your recorded expenses exceed your income by ${money(-t.left)} this month.`);else if(t.income>0)tips.push(`You have ${money(t.left)} remaining after recorded expenses and debt payments.`);if(high)tips.push(`Your largest recorded spending category is ${high[0]} (${money(high[1])}).`);if(t.income>0)tips.push(`Your recorded remaining-income rate is ${rate.toFixed(1)}%. Remember to include irregular expenses before setting a savings goal.`);
-shell(`<div class="dash-head"><div><span class="eyebrow">YOUR FINANCIAL OVERVIEW</span><h1>Budget dashboard</h1><p>Viewing ${escape(ym)} · Monthly totals are based only on entries dated this month.</p></div><span class="user">${escape(session.user.email)}</span></div><div class="stats"><div class="stat"><small>Monthly income</small><strong>${money(t.income)}</strong></div><div class="stat"><small>Expenses</small><strong>${money(t.expense)}</strong></div><div class="stat"><small>Debt payments</small><strong>${money(t.debt)}</strong></div><div class="stat highlight"><small>Remaining</small><strong>${money(t.left)}</strong></div></div><div class="columns"><section class="panel"><h2>Add a financial entry</h2><p>Add your income, expenses, or recurring debt payments manually.</p><form id="entryform"><div class="two"><label>Entry type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="debt">Debt payment</option></select></label><label>Amount ($)<input name="amount" type="number" min="0.01" max="100000000" step="0.01" placeholder="125.00" required/></label></div><div class="two"><label>Category<select name="category"><option>Housing</option><option>Food</option><option>Transportation</option><option>Utilities</option><option>Entertainment</option><option>Healthcare</option><option>Debt</option><option>Paycheck</option><option>Savings</option><option>Other</option></select></label><label>Date<input name="entry_date" type="date" value="${new Date().toLocaleDateString('en-CA')}" required/></label></div><label>Description (optional)<input name="description" maxlength="200" placeholder="e.g. Grocery shopping"/></label><button type="submit">+ Save entry</button><p id="entrystatus" role="status" class="status"></p></form></section><section class="panel"><h2>Spending breakdown</h2><p>Expense and debt categories for this month.</p><div class="canvas-wrap"><canvas id="chart" aria-label="Spending chart" role="img"></canvas></div></section></div><div class="columns"><section class="panel"><h2>Budget recommendations</h2><div class="tips">${tips.map(x=>`<div class="tip">✦ ${escape(x)}</div>`).join('')}</div><small>Recommendations are calculations, not financial advice. Entries are not automatically recurring.</small></section><section class="panel ai"><h2>✦ Ask your AI assistant</h2><p>Ask about patterns in the financial information you entered.</p><form id="aiform"><label>Your question<textarea name="question" rows="3" maxlength="600" placeholder="Where am I overspending? How could I save $200?" required></textarea></label><button type="submit">Ask AI</button></form><div id="airesponse" class="airesponse" role="status">AI requires a configured secure server function and API key.</div></section></div><section class="panel"><h2>Financial entries</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Description</th><th>Amount</th><th></th></tr></thead><tbody>${entries.length?entries.slice(0,100).map(e=>`<tr><td>${escape(e.entry_date)}</td><td>${escape(e.kind)}</td><td>${escape(e.category)}</td><td>${escape(e.description)}</td><td>${money(e.amount)}</td><td><button class="delete ghost" data-id="${escape(e.id)}">Delete</button></td></tr>`).join(''):'<tr><td colspan="6">No entries yet. Add your first one above.</td></tr>'}</tbody></table></div></section>`);
+shell(`<div class="dash-head"><div><span class="eyebrow">YOUR FINANCIAL OVERVIEW</span><h1>Budget dashboard</h1><p>Viewing ${escape(ym)} · Monthly totals are based only on entries dated this month.</p></div><span class="user">${escape(session.user.email)}</span></div><div class="stats"><div class="stat"><small>Monthly income</small><strong>${money(t.income)}</strong></div><div class="stat"><small>Expenses</small><strong>${money(t.expense)}</strong></div><div class="stat"><small>Debt payments</small><strong>${money(t.debt)}</strong></div><div class="stat highlight"><small>Remaining</small><strong>${money(t.left)}</strong></div></div><div class="columns"><section class="panel"><h2>Add a financial entry</h2><p>Add your income, expenses, or recurring debt payments manually.</p><form id="entryform"><div class="two"><label>Entry type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="debt">Debt payment</option></select></label><label>Amount ($)<input name="amount" type="number" min="0.01" max="100000000" step="0.01" placeholder="125.00" required/></label></div><div class="two"><label>Category<select name="category"><option>Housing</option><option>Food</option><option>Transportation</option><option>Utilities</option><option>Entertainment</option><option>Healthcare</option><option>Debt</option><option>Paycheck</option><option>Savings</option><option>Other</option></select></label><label>Date<input name="entry_date" type="date" value="${localDate()}" required/></label></div><label>Description (optional)<input name="description" maxlength="200" placeholder="e.g. Grocery shopping"/></label><label><span><input name="auto_category" type="checkbox" checked style="width:auto;display:inline;margin-right:8px"/> Automatically categorize entries</span></label><p id="categorypreview" class="status" role="status"></p><button type="submit">+ Save entry</button><p id="entrystatus" role="status" class="status"></p></form></section><section class="panel"><h2>Spending breakdown</h2><p>Expense and debt categories for this month.</p><div class="canvas-wrap"><canvas id="chart" aria-label="Spending chart" role="img"></canvas></div></section></div><div class="columns"><section class="panel"><h2>Budget recommendations</h2><div class="tips">${tips.map(x=>`<div class="tip">✦ ${escape(x)}</div>`).join('')}</div><small>Recommendations are calculations, not financial advice. Entries are not automatically recurring.</small></section><section class="panel ai"><h2>✦ Ask your AI assistant</h2><p>Ask about patterns in the financial information you entered.</p><form id="aiform"><label>Your question<textarea name="question" rows="3" maxlength="600" placeholder="Where am I overspending? How could I save $200?" required></textarea></label><button type="submit">Ask AI</button></form><div id="airesponse" class="airesponse" role="status">AI requires a configured secure server function and API key.</div></section></div><section class="panel"><h2>Financial entries</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Description</th><th>Amount</th><th></th></tr></thead><tbody>${entries.length?entries.slice(0,100).map(e=>`<tr><td>${escape(e.entry_date)}</td><td>${escape(e.kind)}</td><td>${escape(e.category)}</td><td>${escape(e.description)}</td><td>${money(e.amount)}</td><td><button class="delete ghost" data-id="${escape(e.id)}">Delete</button></td></tr>`).join(''):'<tr><td colspan="6">No entries yet. Add your first one above.</td></tr>'}</tbody></table></div></section>`);
 if(chart)chart.destroy();chart=new Chart(document.querySelector('#chart'),{type:'doughnut',data:{labels:Object.keys(categories).length?Object.keys(categories):['No entries'],datasets:[{data:Object.keys(categories).length?Object.values(categories):[1],backgroundColor:['#28786d','#75b4a1','#e5b76c','#647a99','#b9d6ce','#b97c69','#9c83c6','#7797b1','#d6c18b','#9ab5ab']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}});
-document.querySelector('#entryform').addEventListener('submit',async ev=>{ev.preventDefault();const f=new FormData(ev.currentTarget),amount=Number(f.get('amount'));if(!Number.isFinite(amount)||amount<=0)return;notice('entrystatus','Saving…');const {error}=await sb.from('entries').insert({user_id:session.user.id,kind:f.get('kind'),amount,category:f.get('kind') === 'expense' ? categorizeExpense(f.get('description')) : f.get('category'),entry_date:f.get('entry_date'),description:f.get('description')});if(error){notice('entrystatus',error.message);return;}await refresh();});
+const entryForm=document.querySelector('#entryform');
+const updateCategory=setupCategorization(entryForm);
+entryForm.addEventListener('submit',async ev=>{
+ ev.preventDefault();if(entryForm.dataset.saving==='true')return;
+ updateCategory();const f=new FormData(entryForm),amount=Number(f.get('amount'));
+ if(!Number.isFinite(amount)||amount<=0||amount>100000000){notice('entrystatus','Enter an amount between $0.01 and $100,000,000.');return;}
+ const userId=session?.user.id;if(!userId)return;
+ const button=entryForm.querySelector('button[type="submit"]');
+ entryForm.dataset.saving='true';button.disabled=true;notice('entrystatus','Saving…');
+ try{
+  const {error}=await sb.from('entries').insert({user_id:userId,kind:f.get('kind'),amount,category:f.get('category'),entry_date:f.get('entry_date'),description:String(f.get('description')||'').trim()});
+  if(error)throw error;
+  if(session?.user.id===userId)await refresh();
+ }catch(error){if(entryForm.isConnected)notice('entrystatus',error.message||'Could not save. Please try again.');}
+ finally{entryForm.dataset.saving='false';button.disabled=false;}
+});
 document.querySelectorAll('.delete').forEach(btn=>btn.addEventListener('click',async()=>{if(!confirm('Delete this entry?'))return;const {error}=await sb.from('entries').delete().eq('id',btn.dataset.id);if(error)alert(error.message);else await refresh();}));
 document.querySelector('#aiform').addEventListener('submit',async ev=>{ev.preventDefault();const question=new FormData(ev.currentTarget).get('question');const output=document.querySelector('#airesponse');output.textContent='Analyzing your saved entries…';const {data,error}=await sb.functions.invoke('ask-ai',{body:{question}});output.textContent=error?(data?.error||error.message):(data?.error||data?.answer||'No answer received.');});}
 async function refresh(){try{await loadEntries();render()}catch(e){shell(`<section class="panel"><h2>Could not load entries</h2><p>${escape(e.message)}</p><p>Check the database schema and Row Level Security policies in README.</p></section>`);}}
